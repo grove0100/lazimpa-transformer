@@ -114,6 +114,78 @@ class TransformerEncoder(nn.Module):
 
         return transformed
 
+class TransformerEncoderImpatient(nn.Module):
+    """Implementation of a transformer encoder for impatient Listener
+    Two regimes are implemented:
+    * 'causal' (left-to-right): the symbols are masked such that every symbol's embedding only can depend on the
+        symbols to the left of it. The embedding of the <eos> symbol is taken as the representative.
+    *  'non-causal': a special symbol <sos> is pre-pended to the input sequence, all symbols before <eos> are un-masked.
+    """
+    ## A FAIRE ##############################################################################################################
+    def __init__(self,
+                 vocab_size: int,
+                 max_len: int,
+                 embed_dim: int,
+                 num_heads: int,
+                 hidden_size: int,
+                 num_layers: int = 1,
+                 positional_embedding=True,
+                 causal: bool = True) -> None:
+        super().__init__()
+
+        # in the non-causal case, we will use a special symbol prepended to the input messages which would have
+        # term id of `vocab_size`. Hence we increase the vocab size and the max length
+        causal = True ########## EN ATTENDANT DE GERER LE CAS NON CAUSAL #########################
+        if not causal:
+            max_len += 1
+            vocab_size += 1
+
+        self.base_encoder = TransformerBaseEncoder(vocab_size=vocab_size,
+                                                   max_len=max_len,
+                                                   embed_dim=embed_dim,
+                                                   num_heads=num_heads,
+                                                   num_layers=num_layers,
+                                                   hidden_size=hidden_size,
+                                                   positional_embedding=positional_embedding)
+        self.max_len = max_len
+        self.sos_id = torch.tensor([vocab_size - 1]).long()
+        self.causal = causal
+
+    def forward(self, message: torch.Tensor, lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if lengths is None:
+            lengths = find_lengths(message)
+
+        batch_size = message.size(0)
+
+        if not self.causal:
+            ################## A MODIFIER ########################
+            prefix = self.sos_id.to(message.device).unsqueeze(0).expand((batch_size, 1))
+            message = torch.cat([prefix, message], dim=1)
+            lengths = lengths + 1
+
+            max_len = message.size(1)
+            len_indicators = torch.arange(max_len).expand((batch_size, max_len)).to(lengths.device)
+            lengths_expanded = lengths.unsqueeze(1)
+            padding_mask = len_indicators >= lengths_expanded
+
+            transformed = self.base_encoder(message, padding_mask)
+            # as the input to the agent, we take the embedding for the first symbol, which is always the special <sos> one
+            transformed = transformed[:, 0, :]
+        else:
+            max_len = message.size(1)
+            len_indicators = torch.arange(max_len).expand((batch_size, max_len)).to(lengths.device)
+            lengths_expanded = lengths.unsqueeze(1)
+            padding_mask = len_indicators >= lengths_expanded
+
+            attn_mask = torch.triu(torch.ones(max_len, max_len).byte(), diagonal=1).to(lengths.device)
+            attn_mask = attn_mask.float().masked_fill(attn_mask == 1, float('-inf'))
+            transformed = self.base_encoder(message, key_padding_mask=padding_mask, attn_mask=attn_mask)
+
+
+        transformed = torch.transpose(transformed,0,1)
+        return transformed
+  
+
 
 class TransformerBaseEncoder(torch.nn.Module):
     """
@@ -329,11 +401,12 @@ class TransformerDecoderLayer(nn.Module):
         residual = x
         x = self.encoder_attn_layer_norm(x)
         # would be a single vector, so no point in attention at all
+        encoder_out = encoder_out.unsqueeze(0)
         x, attn = self.encoder_attn(
             query=x,
             key=encoder_out,
             value=encoder_out,
-            static_kv=True,
+            #static_kv=True,
         )
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x

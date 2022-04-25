@@ -12,7 +12,7 @@ import egg.core as core
 from egg.core import EarlyStopperAccuracy
 from egg.zoo.channel.features import OneHotLoader, UniformLoader
 from egg.zoo.channel.archs import Sender, Receiver
-from egg.core.reinforce_wrappers import RnnReceiverImpatient
+from egg.core.reinforce_wrappers import RnnReceiverImpatient, TransformerReceiverImpatient
 from egg.core.reinforce_wrappers import SenderImpatientReceiverRnnReinforce
 from egg.core.util import dump_sender_receiver_impatient
 
@@ -260,8 +260,7 @@ def dump_impatient(game, n_features, device, gs_mode,epoch):
 
     #print(f'Mean accuracy wrt uniform distribution is {unif_acc}')
     #print(f'Mean accuracy wrt powerlaw distribution is {powerlaw_acc}')
-    if epoch%25==0:
-        print(json.dumps({'powerlaw': powerlaw_acc, 'unif': unif_acc}))
+    print(json.dumps({'powerlaw': powerlaw_acc, 'unif': unif_acc}))
 
     return acc_vec, messages
 
@@ -270,7 +269,11 @@ def main(params):
     opts = get_params(params)
     print(opts, flush=True)
     device = opts.device
-
+    print('reg',opts.reg)
+    print('impatient',opts.impatient)
+    opts.causal_receiver = True
+    print('causal_sender',opts.causal_sender)
+    print('causal_receiver',opts.causal_receiver)
     force_eos = opts.force_eos == 1
 
     if opts.probs == 'uniform':
@@ -296,7 +299,7 @@ def main(params):
 
     probs /= probs.sum()
 
-    print('the probs are: ', probs, flush=True)
+    #print('the probs are: ', probs, flush=True)
 
     train_loader = OneHotLoader(n_features=opts.n_features, batch_size=opts.batch_size,
                                 batches_per_epoch=opts.batches_per_epoch, probs=probs)
@@ -321,21 +324,28 @@ def main(params):
                                    cell=opts.sender_cell, max_len=opts.max_len, num_layers=opts.sender_num_layers,
                                    force_eos=force_eos)
     if opts.receiver_cell == 'transformer':
-        receiver = Receiver(n_features=opts.n_features, n_hidden=opts.receiver_embedding)
-        receiver = core.TransformerReceiverDeterministic(receiver, opts.vocab_size, opts.max_len,
+        if not opts.impatient:
+          receiver = Receiver(n_features=opts.n_features, n_hidden=opts.receiver_embedding)
+          receiver = core.TransformerReceiverDeterministic(receiver, opts.vocab_size, opts.max_len,
                                                          opts.receiver_embedding, opts.receiver_num_heads, opts.receiver_hidden,
                                                          opts.receiver_num_layers, causal=opts.causal_receiver)
+        else: #impatient transformer
+          receiver = Receiver(n_features = opts.n_features,n_hidden = opts.receiver_embedding)
+          receiver = TransformerReceiverImpatient(receiver, opts.vocab_size, opts.max_len,
+                                                         opts.receiver_embedding, opts.receiver_num_heads, opts.receiver_hidden,
+                                                         opts.receiver_num_layers, causal=opts.causal_receiver,n_features=opts.n_features)
+
     else:
 
         receiver = Receiver(n_features=opts.n_features, n_hidden=opts.receiver_hidden)
 
         if not opts.impatient:
-          receiver = Receiver(n_features=opts.n_features, n_hidden=opts.receiver_hidden)
+          #receiver = Receiver(n_features=opts.n_features, n_hidden=opts.receiver_hidden)
           receiver = core.RnnReceiverDeterministic(receiver, opts.vocab_size, opts.receiver_embedding,
                                                  opts.receiver_hidden, cell=opts.receiver_cell,
                                                  num_layers=opts.receiver_num_layers)
         else:
-          receiver = Receiver(n_features=opts.receiver_hidden, n_hidden=opts.vocab_size)
+          #receiver = Receiver(n_features=opts.receiver_hidden, n_hidden=opts.vocab_size)
           # If impatient 1
           receiver = RnnReceiverImpatient(receiver, opts.vocab_size, opts.receiver_embedding,
                                             opts.receiver_hidden, cell=opts.receiver_cell,
